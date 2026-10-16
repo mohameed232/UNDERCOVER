@@ -107,7 +107,7 @@
     socket = new WebSocket(`${scheme}://${location.host}/ws/${credentials.room_code}`);
     socket.addEventListener("open", () => {
       reconnectAttempts = 0;
-      setConnection("متصل");
+      setConnection("جارٍ التحقق…", true);
       socket.send(JSON.stringify({ type: "auth", player_id: credentials.player_id, token: credentials.token }));
     });
     socket.addEventListener("message", (event) => {
@@ -115,6 +115,7 @@
       if (message.type === "error") return showToast(message.message);
       const phaseChanged = !state || state.phase !== message.phase || state.round !== message.round;
       state = message;
+      setConnection("متصل");
       if (phaseChanged) { secretVisible = false; selectedVote = null; }
       renderState();
     });

@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
@@ -16,7 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="UNDERCOVER", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/undercover-assets", StaticFiles(directory=STATIC_DIR), name="undercover-assets")
 rooms = RoomManager()
 connections: dict[str, dict[str, WebSocket]] = {}
 
@@ -97,7 +98,25 @@ async def broadcast(code: str) -> None:
 async def room_socket(websocket: WebSocket, code: str) -> None:
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
-    if origin and host and origin.split("://", 1)[-1].rstrip("/") != host:
+    # A reverse proxy may omit the public port from Host (for example :8081).
+    # Keep the hostname check; player tokens are still required after the handshake.
+    try:
+        origin_parts = urlsplit(origin) if origin else None
+        host_parts = urlsplit(f"//{host}") if host else None
+        origin_host = origin_parts.hostname if origin_parts else None
+        request_host = host_parts.hostname if host_parts else None
+        origin_port = (
+            origin_parts.port or (443 if origin_parts.scheme == "https" else 80)
+            if origin_parts else None
+        )
+        host_port = host_parts.port if host_parts else None
+    except ValueError:
+        await websocket.close(code=4403)
+        return
+    if origin and (
+        not origin_host or not request_host or origin_host.lower() != request_host.lower()
+        or (host_port is not None and host_port != origin_port)
+    ):
         await websocket.close(code=4403)
         return
     try:

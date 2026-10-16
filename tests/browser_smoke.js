@@ -7,6 +7,12 @@ async function noOverflow(page) {
   const widths = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   assert.ok(widths[0] <= widths[1], `horizontal overflow: ${widths.join(' > ')}`);
   assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
+  const colors = await page.evaluate(() => ({
+    background: getComputedStyle(document.body).backgroundColor,
+    primary: getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()
+  }));
+  assert.equal(colors.background, 'rgb(245, 243, 239)');
+  assert.equal(colors.primary, '#4d6f7d');
 }
 
 async function testPassPlay(browser) {

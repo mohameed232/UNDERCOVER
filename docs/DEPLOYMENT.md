@@ -53,6 +53,19 @@ sudo systemctl reload nginx
 
 لا تستبدل ملفات المواقع القائمة. أنشئ ملفًا جديدًا وراجع تعارض `server_name` والمنفذ قبل إعادة التحميل. يتضمن المثال ترويسات WebSocket اللازمة واتصال HTTPS فقط للمستخدمين.
 
+### إذا كان UNDERCOVER يعمل بالفعل على منفذ Nginx 8081
+
+راجع `deploy/nginx-undercover-8081.conf` وطبّق أقسام `location` على كتلة `server` الحالية الخاصة بـ UNDERCOVER فقط. يجب تمرير `/undercover-assets/` إلى FastAPI، وتمرير `/ws/` مع ترويسات WebSocket، وتمرير `Host` باستخدام `$http_host` حتى يحتفظ بالمنفذ العام. اختبر الإعداد قبل إعادة التحميل:
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+curl --fail http://127.0.0.1:8011/health
+curl --fail -I http://127.0.0.1:8081/undercover-assets/css/styles.css
+```
+
+تأكد أن خدمة UNDERCOVER تستخدم عامل Uvicorn واحدًا؛ الغرف محفوظة في ذاكرة العملية. إذا كان المنفذ 8081 عامًا، فضعه خلف HTTPS صالح قبل استخدامه للإنتاج.
+
 ## 5. التحديث والرجوع
 
 احتفظ بنسخة أو إصدار Git معروف قبل التحديث، ثم داخل `/opt/undercover`:

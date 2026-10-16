@@ -26,7 +26,10 @@ def test_pages_health_and_rtl() -> None:
     assert client.get("/health").json() == {"status": "ok"}
     assert 'dir="rtl"' in client.get("/").text
     assert 'dir="rtl"' in client.get("/party").text
-    assert "@media (min-width: 640px)" in client.get("/static/css/styles.css").text
+    assert '/undercover-assets/css/styles.css' in client.get("/").text
+    assert '/undercover-assets/css/styles.css' in client.get("/party").text
+    assert "@media (min-width: 640px)" in client.get("/undercover-assets/css/styles.css").text
+    assert client.get("/undercover-assets/js/app.js").status_code == 200
 
 
 def test_invalid_room_codes_and_duplicate_names() -> None:
@@ -67,3 +70,35 @@ def test_credentials_are_not_exposed_in_public_state() -> None:
         serialized = str(state)
         assert host["token"] not in serialized
         assert "token" not in serialized
+
+
+def test_websocket_accepts_public_port_when_proxy_omits_it_from_host() -> None:
+    code, host, second, _third = create_three_players()
+    headers = {"host": "party.example.com", "origin": "http://party.example.com:8081"}
+    with client.websocket_connect(f"/ws/{code}", headers=headers) as host_socket:
+        host_state = authenticate(host_socket, host)
+        assert host_state["phase"] == "lobby"
+        with client.websocket_connect(f"/ws/{code}", headers=headers) as player_socket:
+            player_state = authenticate(player_socket, second)
+            assert player_state["self"]["name"] == "سارة"
+            assert player_state["players"][0]["connected"] is True
+
+
+def test_websocket_rejects_foreign_origin() -> None:
+    code, host, _second, _third = create_three_players()
+    headers = {"host": "party.example.com", "origin": "http://other.example.com:8081"}
+    try:
+        with client.websocket_connect(f"/ws/{code}", headers=headers) as socket:
+            authenticate(socket, host)
+    except WebSocketDisconnect as error:
+        assert error.code == 4403
+
+
+def test_websocket_rejects_wrong_public_port_when_host_includes_port() -> None:
+    code, host, _second, _third = create_three_players()
+    headers = {"host": "party.example.com:8081", "origin": "http://party.example.com:8082"}
+    try:
+        with client.websocket_connect(f"/ws/{code}", headers=headers) as socket:
+            authenticate(socket, host)
+    except WebSocketDisconnect as error:
+        assert error.code == 4403

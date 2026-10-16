@@ -352,7 +352,7 @@
 
   async function boot() {
     try {
-      const response = await fetch("/static/data/word_pairs.json");
+      const response = await fetch("/undercover-assets/data/word_pairs.json");
       if (!response.ok) throw new Error("تعذر تحميل مكتبة الكلمات.");
       game = new window.UndercoverGame(await response.json());
       renderHome();
