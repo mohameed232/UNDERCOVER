@@ -149,7 +149,9 @@ class Room:
         pair = available[secrets.randbelow(len(available))]
         self.used_pair_ids.add(pair["id"])
         player_ids = list(self.players)
-        undercover_id = player_ids[secrets.randbelow(len(player_ids))]
+        previous_undercover_id = self.round.undercover_id if self.round else None
+        eligible_ids = [player_id for player_id in player_ids if player_id != previous_undercover_id]
+        undercover_id = eligible_ids[secrets.randbelow(len(eligible_ids))]
         majority_uses_a = bool(secrets.randbelow(2))
         majority = pair["a"] if majority_uses_a else pair["b"]
         undercover = pair["b"] if majority_uses_a else pair["a"]

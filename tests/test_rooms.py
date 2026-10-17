@@ -44,10 +44,13 @@ def test_complete_five_round_session_for_all_player_counts(player_count: int) ->
     room.start_game(room.host_id)
     used_pairs: set[int] = set()
     expected = {player_id: 0 for player_id in room.players}
+    previous_undercover_id = None
 
     for round_number in range(1, 6):
         assert room.round is not None
         round_state = room.round
+        assert round_state.undercover_id != previous_undercover_id
+        previous_undercover_id = round_state.undercover_id
         assert round_state.pair["id"] not in used_pairs
         used_pairs.add(round_state.pair["id"])
         assert len({asker for asker, _ in round_state.assignments}) == player_count
@@ -70,6 +73,20 @@ def test_complete_five_round_session_for_all_player_counts(player_count: int) ->
     final = room.state_for(room.host_id)
     assert len(final["scoreboard"]) == player_count
     assert final["winners"]
+
+
+def test_undercover_draw_excludes_previous_player_even_if_random_draw_repeats(monkeypatch) -> None:
+    monkeypatch.setattr("undercover.rooms.secrets.randbelow", lambda _maximum: 0)
+    room = connected_room()
+    room.start_game(room.host_id)
+    previous_undercover_id = None
+    for _ in range(5):
+        assert room.round is not None
+        assert room.round.undercover_id != previous_undercover_id
+        previous_undercover_id = room.round.undercover_id
+        finish_round(room)
+        room.next_round(room.host_id)
+    assert room.phase == "finished"
 
 
 def test_secret_and_vote_privacy() -> None:

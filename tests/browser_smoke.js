@@ -28,6 +28,7 @@ async function testPassPlay(browser) {
   await page.getByRole('button', { name: 'بدء الجولة الأولى' }).click();
   const totals = new Map(names.map(name => [name, 0]));
   const pairs = new Set();
+  let previousUndercover = null;
   for (let round = 1; round <= 5; round++) {
     const secrets = new Map();
     for (let index = 0; index < 3; index++) {
@@ -43,6 +44,8 @@ async function testPassPlay(browser) {
     const words = [...secrets.values()];
     const majority = words.find(word => words.filter(other => other === word).length === 2);
     const undercover = [...secrets].find(([,word]) => word !== majority)[0];
+    assert.notEqual(undercover, previousUndercover);
+    previousUndercover = undercover;
     const key = [...new Set(words)].sort().join('|');
     assert.ok(!pairs.has(key)); pairs.add(key);
     await page.locator('#begin-questions').click();
@@ -125,6 +128,7 @@ async function testLocalParty(browser) {
 
   const totals = new Map(names.map(name => [name, 0]));
   const pairs = new Set();
+  let previousUndercover = null;
   for (let round = 1; round <= 5; round += 1) {
     const secrets = new Map();
     for (let index = 0; index < pages.length; index += 1) {
@@ -142,6 +146,8 @@ async function testLocalParty(browser) {
     const majorityWord = [...counts].find(([, count]) => count === 2)[0];
     const undercoverWord = [...counts].find(([, count]) => count === 1)[0];
     const undercover = [...secrets].find(([, word]) => word === undercoverWord)[0];
+    assert.notEqual(undercover, previousUndercover);
+    previousUndercover = undercover;
     const key = [majorityWord, undercoverWord].sort().join('|');
     assert.ok(!pairs.has(key));
     pairs.add(key);

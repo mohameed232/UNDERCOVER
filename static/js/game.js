@@ -64,7 +64,9 @@
       this.usedPairIds.add(pair.id);
       this.roundNumber += 1;
 
-      const undercover = this.players[randomInt(this.players.length)];
+      const previousUndercoverId = this.round?.undercover.id;
+      const eligiblePlayers = this.players.filter(player => player.id !== previousUndercoverId);
+      const undercover = eligiblePlayers[randomInt(eligiblePlayers.length)];
       const majorityUsesA = randomInt(2) === 0;
       const majoritySecret = majorityUsesA ? pair.a : pair.b;
       const undercoverSecret = majorityUsesA ? pair.b : pair.a;

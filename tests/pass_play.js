@@ -9,8 +9,11 @@ for (let count = 3; count <= 12; count += 1) {
     const names = Array.from({ length: count }, (_, index) => `لاعب ${index + 1}`);
     game.startSession(names, session % 2 === 0);
     const used = new Set();
+    let previousUndercoverId = null;
     for (let round = 0; round < 5; round += 1) {
       const current = game.round;
+      assert.notEqual(current.undercover.id, previousUndercoverId);
+      previousUndercoverId = current.undercover.id;
       assert.equal(current.assignments.length, count);
       assert.equal(new Set(current.assignments.map(item => item.asker.id)).size, count);
       assert.ok(current.assignments.every(item => item.asker.id !== item.target.id));
