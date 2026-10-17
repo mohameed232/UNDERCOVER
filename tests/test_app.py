@@ -1,3 +1,5 @@
+import pytest
+
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -23,7 +25,7 @@ def authenticate(socket, credentials):
 
 
 def test_pages_health_and_rtl() -> None:
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json()["status"] == "ok"
     assert 'dir="rtl"' in client.get("/").text
     assert 'dir="rtl"' in client.get("/party").text
     assert '/undercover-assets/css/styles.css' in client.get("/").text
@@ -55,12 +57,11 @@ def test_websocket_auth_reconnection_and_host_authorization() -> None:
         state = authenticate(socket, second)
         assert state["self"]["id"] == second["player_id"]
 
-    try:
+    with pytest.raises(WebSocketDisconnect) as error:
         with client.websocket_connect(f"/ws/{code}") as socket:
             socket.send_json({"type": "auth", "player_id": host["player_id"], "token": "invalid"})
             socket.receive_json()
-    except WebSocketDisconnect as error:
-        assert error.code == 4403
+    assert error.value.code == 4403
 
 
 def test_credentials_are_not_exposed_in_public_state() -> None:
@@ -87,18 +88,30 @@ def test_websocket_accepts_public_port_when_proxy_omits_it_from_host() -> None:
 def test_websocket_rejects_foreign_origin() -> None:
     code, host, _second, _third = create_three_players()
     headers = {"host": "party.example.com", "origin": "http://other.example.com:8081"}
-    try:
+    with pytest.raises(WebSocketDisconnect) as error:
         with client.websocket_connect(f"/ws/{code}", headers=headers) as socket:
             authenticate(socket, host)
-    except WebSocketDisconnect as error:
-        assert error.code == 4403
+    assert error.value.code == 4403
 
 
 def test_websocket_rejects_wrong_public_port_when_host_includes_port() -> None:
     code, host, _second, _third = create_three_players()
     headers = {"host": "party.example.com:8081", "origin": "http://party.example.com:8082"}
-    try:
+    with pytest.raises(WebSocketDisconnect) as error:
         with client.websocket_connect(f"/ws/{code}", headers=headers) as socket:
             authenticate(socket, host)
-    except WebSocketDisconnect as error:
-        assert error.code == 4403
+    assert error.value.code == 4403
+
+
+def test_missing_room_close_code_and_malformed_message():
+    with pytest.raises(WebSocketDisconnect) as error:
+        with client.websocket_connect("/ws/AAAAA") as socket:
+            socket.receive_json()
+    assert error.value.code == 4404
+    code, host, _second, _third = create_three_players()
+    with client.websocket_connect(f"/ws/{code}") as socket:
+        authenticate(socket, host)
+        socket.send_json([])
+        assert socket.receive_json()["type"] == "error"
+        socket.send_json({"type": "ping"})
+        assert socket.receive_json() == {"type": "pong"}

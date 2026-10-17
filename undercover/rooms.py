@@ -80,6 +80,7 @@ class Room:
         self.round: RoundState | None = None
         self.created_at = time.time()
         self.updated_at = self.created_at
+        self.version = 0
 
     @staticmethod
     def _new_player(name: str) -> Player:
@@ -95,10 +96,11 @@ class Room:
 
     def touch(self) -> None:
         self.updated_at = time.time()
+        self.version += 1
 
     def authenticate(self, player_id: str, token: str) -> Player:
         player = self.players.get(player_id)
-        if player is None or not secrets.compare_digest(player.token, token):
+        if player is None or not secrets.compare_digest(player.token.encode(), token.encode()):
             raise GameError("تعذر التحقق من جلسة اللاعب.")
         return player
 
@@ -294,6 +296,7 @@ class Room:
         viewer = self.players[viewer_id]
         payload: dict[str, Any] = {
             "type": "state",
+            "version": self.version,
             "code": self.code,
             "phase": self.phase,
             "round": self.round_number,

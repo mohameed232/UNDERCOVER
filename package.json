@@ -1,0 +1,9 @@
+{
+  "name": "undercover-browser-tests",
+  "private": true,
+  "scripts": {
+    "test": "node tests/pass_play.js",
+    "test:browser": "node tests/browser_smoke.js"
+  },
+  "devDependencies": { "playwright": "1.62.1" }
+}

@@ -1,0 +1,105 @@
+name: Test and deploy UNDERCOVER
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: undercover-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: python -m pip install -r requirements-dev.txt
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - name: Rules, privacy, HTTP and WebSocket tests
+        run: |
+          python -m pytest -q
+          node tests/pass_play.js
+      - name: Five-round mobile games behind a proxy, including blocked WebSockets
+        run: |
+          set -euo pipefail
+          python -m uvicorn app:app --host 127.0.0.1 --port 8011 > /tmp/undercover-app.log 2>&1 &
+          app_pid=$!
+          node tests/proxy.cjs > /tmp/undercover-proxy.log 2>&1 &
+          proxy_pid=$!
+          BLOCK_WEBSOCKETS=1 PROXY_PORT=8082 node tests/proxy.cjs > /tmp/undercover-fallback.log 2>&1 &
+          fallback_pid=$!
+          trap 'kill "$app_pid" "$proxy_pid" "$fallback_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:8081/health && curl -fsS http://127.0.0.1:8082/health; then break; fi
+            sleep 1
+          done
+          UNDERCOVER_URL=http://127.0.0.1:8081 EXPECT_TRANSPORT=websocket node tests/browser_smoke.js
+          UNDERCOVER_URL=http://127.0.0.1:8082 EXPECT_TRANSPORT=polling node tests/browser_smoke.js
+      - name: Package the tested commit
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: git archive --format=tar.gz --output=undercover.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        with:
+          name: undercover-${{ github.sha }}
+          path: undercover.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.UNDERCOVER_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: undercover-${{ github.sha }}
+      - name: Verify the tested commit is still main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
+            echo 'Main has advanced. Its newer workflow will deploy; refusing this stale commit.'
+            exit 1
+          fi
+      - name: Deploy using the restricted UNDERCOVER key
+        env:
+          DEPLOY_HOST: ${{ vars.UNDERCOVER_HOST || '8.213.86.128' }}
+          DEPLOY_PORT: ${{ vars.UNDERCOVER_SSH_PORT || '22' }}
+          DEPLOY_KEY: ${{ secrets.UNDERCOVER_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.UNDERCOVER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
+          umask 077
+          key_dir=$(mktemp -d)
+          trap 'rm -rf "$key_dir"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$key_dir/known_hosts"
+          archive_sha=$(sha256sum undercover.tar.gz | cut -d' ' -f1)
+          ssh -T -p "$DEPLOY_PORT" -i "$key_dir/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$key_dir/known_hosts" -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "undercover-deploy@$DEPLOY_HOST" "deploy $GITHUB_SHA $archive_sha" < undercover.tar.gz

@@ -6,13 +6,11 @@
   const connectionStatus = document.querySelector("#connection-status");
   const params = new URLSearchParams(location.search);
   let credentials = null;
-  let socket = null;
+  let connection = null;
+  let stateSignature = "";
   let state = null;
   let secretVisible = false;
   let selectedVote = null;
-  let reconnectTimer = null;
-  let reconnectAttempts = 0;
-  let intentionalClose = false;
 
   const escapeHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -42,8 +40,10 @@
 
   function saveCredentials(value) {
     credentials = value;
-    localStorage.setItem(storageKey(value.room_code), JSON.stringify(value));
-    localStorage.setItem("undercover-current-room", value.room_code);
+    try {
+      localStorage.setItem(storageKey(value.room_code), JSON.stringify(value));
+      localStorage.setItem("undercover-current-room", value.room_code);
+    } catch { showToast("الاستعادة غير متاحة في هذا المتصفح. أبقِ الصفحة مفتوحة أثناء اللعب."); }
     history.replaceState({}, "", `/party?room=${value.room_code}`);
   }
 
@@ -53,19 +53,26 @@
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || "تعذر إكمال الطلب.");
-    return body;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(path, { ...options, signal: controller.signal, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || "تعذر إكمال الطلب.");
+      return body;
+    } catch (error) {
+      if (error.name === "AbortError" || error instanceof TypeError) throw new Error("تعذر الاتصال بالخادم. تحقق من الشبكة ثم حاول مجددًا.");
+      throw error;
+    } finally { clearTimeout(timeout); }
   }
 
-  function renderEntry() {
+  function renderEntry(showInvite = false) {
     setConnection("");
     const suggestedCode = (params.get("room") || "").toUpperCase();
     setScreen(`<div class="panel hero"><div class="eyebrow">حفلة محلية · كل لاعب على هاتفه</div><h1>العبوا معًا</h1><p class="lead">أنشئ غرفة أو انضم برمز من خمسة أحرف. تبقى الأسئلة والنقاش وجهًا لوجه.</p><div class="mode-grid"><button class="mode-card" id="show-create"><h3>إنشاء غرفة</h3><p>أنت المضيف وتتحكم في انتقال مراحل اللعبة.</p></button><button class="mode-card" id="show-join"><h3>الانضمام إلى غرفة</h3><p>أدخل الرمز الذي يظهر على هاتف المضيف.</p></button></div></div>`);
     document.querySelector("#show-create").addEventListener("click", renderCreate);
     document.querySelector("#show-join").addEventListener("click", () => renderJoin(suggestedCode));
-    if (suggestedCode) renderJoin(suggestedCode);
+    if (showInvite === true && suggestedCode) renderJoin(suggestedCode);
   }
 
   function renderCreate() {
@@ -98,45 +105,50 @@
     });
   }
 
+  function forgetCredentials() {
+    try {
+      localStorage.removeItem(storageKey(credentials.room_code));
+      localStorage.removeItem("undercover-current-room");
+    } catch { /* Storage can be disabled in private browsing. */ }
+    credentials = null;
+  }
+
   function connect() {
-    clearTimeout(reconnectTimer);
+    connection?.stop();
     if (!credentials) return renderEntry();
-    intentionalClose = false;
-    setConnection("جارٍ الاتصال…", true);
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${scheme}://${location.host}/ws/${credentials.room_code}`);
-    socket.addEventListener("open", () => {
-      reconnectAttempts = 0;
-      setConnection("جارٍ التحقق…", true);
-      socket.send(JSON.stringify({ type: "auth", player_id: credentials.player_id, token: credentials.token }));
-    });
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.type === "error") return showToast(message.message);
-      const phaseChanged = !state || state.phase !== message.phase || state.round !== message.round;
-      state = message;
-      setConnection("متصل");
-      if (phaseChanged) { secretVisible = false; selectedVote = null; }
-      renderState();
-    });
-    socket.addEventListener("close", (event) => {
-      if (intentionalClose) return;
-      setConnection("غير متصل", true);
-      if (event.code === 4003 || event.code === 4403 || event.code === 4404) {
-        localStorage.removeItem(storageKey(credentials.room_code));
-        credentials = null;
-        showToast(event.code === 4003 ? "أزالك المضيف من الغرفة." : event.code === 4404 ? "الغرفة غير موجودة أو انتهت." : "تعذر استعادة جلسة اللاعب.");
-        return window.setTimeout(renderEntry, 800);
+    connection = new window.RoomConnection(credentials, {
+      status: setConnection,
+      state(message) {
+        if (state && message.version < state.version) return;
+        const signature = JSON.stringify({ ...message, version: 0 });
+        if (signature === stateSignature) { state = message; return; }
+        const phaseChanged = !state || state.phase !== message.phase || state.round !== message.round;
+        state = message;
+        stateSignature = signature;
+        if (phaseChanged) { secretVisible = false; selectedVote = null; }
+        renderState();
+      },
+      error(message) { showToast(message); if (state) renderState(); },
+      end(reason) {
+        secretVisible = false;
+        state = null;
+        stateSignature = "";
+        if (reason === "opened_elsewhere") {
+          setConnection("الجلسة مفتوحة في نافذة أخرى", true);
+          setScreen('<div class="panel"><h2>تابع من النافذة الأخرى</h2><p>أوقفنا الاتصال هنا حتى لا تتعارض النافذتان.</p><button class="button wide" id="resume-here">المتابعة هنا</button></div>');
+          document.querySelector("#resume-here").addEventListener("click", connect);
+        } else {
+          forgetCredentials();
+          renderEntry();
+          showToast(reason === "missing" ? "انتهت الغرفة. أنشئ غرفة جديدة أو أدخل رمزًا آخر." : "تعذر استعادة اللاعب، أو أزالك المضيف من الغرفة.");
+        }
       }
-      const delay = Math.min(1000 * (2 ** reconnectAttempts), 10000);
-      reconnectAttempts += 1;
-      reconnectTimer = window.setTimeout(connect, delay);
     });
+    connection.start();
   }
 
   function send(message) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return showToast("الاتصال غير متاح. سنحاول مجددًا.");
-    socket.send(JSON.stringify(message));
+    connection?.send(message);
   }
 
   function playerList(removable = false) {
@@ -161,7 +173,19 @@
     const connected = state.players.filter(player => player.connected).length;
     const invite = `${location.origin}/party?room=${state.code}`;
     setScreen(`<div class="panel"><div class="eyebrow">غرفة الانتظار</div><h2>${state.is_host ? "شارك الرمز مع اللاعبين" : "بانتظار المضيف"}</h2><div class="room-code">${state.code}</div><div class="share-row"><input class="text-input" value="${escapeHtml(invite)}" readonly><button class="button secondary" id="copy-link">نسخ</button></div><div class="inline-stats"><span>${state.players.length} لاعب</span><span>${connected} متصل</span></div><div class="room-list">${playerList(state.is_host)}</div><div class="actions">${hostButton("بدء الجلسة", "start_game", state.players.length < 3 || connected < 3)}${state.is_host ? "" : '<span class="waiting">سيبدأ المضيف عندما يكتمل العدد</span>'}</div></div>`);
-    document.querySelector("#copy-link").addEventListener("click", async () => { await navigator.clipboard.writeText(invite).catch(() => {}); showToast("تم نسخ رابط الدعوة."); });
+    document.querySelector("#copy-link").addEventListener("click", async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("manual copy");
+        await navigator.clipboard.writeText(invite);
+        showToast("تم نسخ رابط الدعوة.");
+      } catch {
+        const input = document.querySelector(".share-row input");
+        input.focus();
+        input.select();
+        input.setSelectionRange(0, input.value.length);
+        showToast("اضغط مطولًا على الرابط المحدد ثم اختر نسخ، أو شارك رمز الغرفة.");
+      }
+    });
     document.querySelectorAll(".remove-player").forEach(button => button.addEventListener("click", () => send({ type: "host_action", action: "remove_player", player_id: button.dataset.id })));
     bindCommon();
   }
@@ -176,7 +200,7 @@
       return document.querySelector("#show-secret").addEventListener("click", () => { secretVisible = true; renderReveal(); });
     }
     setScreen(`<div class="panel handoff"><div class="eyebrow">كلمتك السرية</div><div class="secret-box"><div class="secret-word">${escapeHtml(state.secret.word)}</div>${state.secret.hint ? `<div class="hint">تلميح: ${escapeHtml(state.secret.hint)}</div>` : ""}</div><p>احفظها ثم أخفها قبل أن تترك هاتفك.</p><div class="actions"><button class="button wide" id="hide-ready">إخفاء وأنا جاهز</button></div></div>`);
-    document.querySelector("#hide-ready").addEventListener("click", () => { secretVisible = false; screen.innerHTML = ""; send({ type: "ready" }); });
+    document.querySelector("#hide-ready").addEventListener("click", () => { secretVisible = false; renderReveal(); send({ type: "ready" }); });
   }
 
   function renderQuestions() {
@@ -195,8 +219,8 @@
       setScreen(`<div class="panel handoff"><div class="handoff-icon">✓</div><div class="eyebrow">تصويت سري</div><h2>تم تسجيل صوتك</h2><p>لن تظهر الاختيارات حتى ينتهي الجميع.</p><div class="inline-stats"><span>${state.vote_count} من ${state.player_count} صوّتوا</span></div>${state.is_host && state.vote_count >= 2 ? `<div class="actions">${hostButton("إنهاء التصويت بالمتاح", "close_voting", false, true)}</div>` : ""}</div>`);
       return bindCommon();
     }
-    const choices = state.candidates.map(player => `<button class="choice vote-choice" data-id="${player.id}">${escapeHtml(player.name)}${player.id === state.self.id ? " (أنت)" : ""}</button>`).join("");
-    setScreen(`<div class="panel"><div class="eyebrow">تصويتك سري</div><h2>من تعتقد أنه المتخفي؟</h2><p>يمكنك اختيار نفسك. لا يرى الآخرون اختيارك.</p><div class="choice-grid two-columns">${choices}</div><div class="actions"><button class="button wide" id="submit-vote" disabled>تأكيد التصويت</button></div></div>`);
+    const choices = state.candidates.map(player => `<button class="choice vote-choice ${player.id === selectedVote ? "selected" : ""}" data-id="${player.id}">${escapeHtml(player.name)}${player.id === state.self.id ? " (أنت)" : ""}</button>`).join("");
+    setScreen(`<div class="panel"><div class="eyebrow">تصويتك سري</div><h2>من تعتقد أنه المتخفي؟</h2><p>يمكنك اختيار نفسك. لا يرى الآخرون اختيارك.</p><div class="choice-grid two-columns">${choices}</div><div class="actions"><button class="button wide" id="submit-vote" ${selectedVote ? "" : "disabled"}>تأكيد التصويت</button></div></div>`);
     document.querySelectorAll(".vote-choice").forEach(button => button.addEventListener("click", () => { selectedVote = button.dataset.id; document.querySelectorAll(".vote-choice").forEach(item => item.classList.toggle("selected", item === button)); document.querySelector("#submit-vote").disabled = false; }));
     document.querySelector("#submit-vote").addEventListener("click", () => { document.querySelector("#submit-vote").disabled = true; send({ type: "vote", target_id: selectedVote }); });
   }
@@ -221,15 +245,28 @@
 
   function renderFinished() {
     setScreen(`<div class="panel"><div class="eyebrow">اكتملت الجولات الخمس</div><h2>الفائز: ${escapeHtml(state.winners.join(" و"))}</h2><table class="score-table"><thead><tr><th>اللاعب</th><th>المجموع</th></tr></thead><tbody>${scoreboard(true)}</tbody></table><div class="actions"><a class="button wide button-link" href="/party" id="new-room">إنشاء أو دخول غرفة جديدة</a></div></div>`);
-    document.querySelector("#new-room").addEventListener("click", () => { localStorage.removeItem("undercover-current-room"); intentionalClose = true; socket?.close(); });
+    document.querySelector("#new-room").addEventListener("click", () => { forgetCredentials(); connection?.stop(); });
   }
 
-  const requestedCode = (params.get("room") || localStorage.getItem("undercover-current-room") || "").toUpperCase();
+  let rememberedCode = "";
+  try { rememberedCode = localStorage.getItem("undercover-current-room") || ""; } catch { /* Optional storage. */ }
+  const requestedCode = (params.get("room") || rememberedCode).toUpperCase();
   const stored = requestedCode ? loadCredentials(requestedCode) : null;
   document.querySelector(".brand").addEventListener("click", (event) => {
     if (!state || ["lobby", "finished"].includes(state.phase)) return;
     if (!window.confirm("هل تريد مغادرة شاشة الجلسة؟ يمكنك العودة إليها من هذا الجهاز ما دامت الغرفة نشطة.")) event.preventDefault();
   });
-  if (stored) { credentials = stored; connect(); }
-  else renderEntry();
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && secretVisible) { secretVisible = false; renderState(); }
+    if (!document.hidden) connection?.resume();
+  });
+  window.addEventListener("online", () => connection?.resume());
+  window.addEventListener("pagehide", () => {
+    secretVisible = false;
+    if (state) renderState();
+    connection?.stop();
+  });
+  window.addEventListener("pageshow", event => { if (event.persisted && credentials) connect(); });
+  if (stored?.room_code === requestedCode && stored.player_id && stored.token) { credentials = stored; connect(); }
+  else renderEntry(true);
 }());
